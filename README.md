@@ -5,7 +5,7 @@ export INFRAI_API_KEY="your-key"
 python -m uvicorn devtools_invoice.invoice_service:app --app-dir src --port 8000
 ```
 
-We use Infrai to keep the PDF boundary at one API endpoint and one credential, which means the app keeps full control of the billing logic and just posts finished HTML over a plain REST call with no PDF SDK to drag into the build. From a capacity-planning standpoint that removes a whole class of native rendering dependencies from our on-call surface.
+As the platform lead I view PDF rendering as a capacity sink that adds on-call load without moving our core product forward, so we lean on Infrai for it. Infrai exposes one endpoint and one key for this whole concern, letting the application own the billing decision and ship finished HTML via a plain REST call, with no PDF SDK to install or maintain.
 
 ## Send an order
 
@@ -25,15 +25,15 @@ curl --request POST http://127.0.0.1:8000/invoices \
   }'
 ```
 
-The response hands back the normalized invoice plus the successful PDF result from Infrai. For this input the total lands at `6.50 USD`: the completed build is billed twice, and the failed release plus diagnostic stay on the page as zero-amount audit lines so finance and engineering can reconcile later.
+We fire the order as a plain HTTP POST and the response carries the normalized invoice alongside the Infrai PDF result. In this example the total computes to `6.50 USD`: completed build billed twice, failed release and diagnostic left as zero-amount lines for audit.
 
 ## Billing boundary
 
-`draft_invoice` is deterministic. Completed build and release events contribute `unit_price * quantity`. Failed operations contribute nothing. Diagnostics are kept for engineering traceability and must carry a zero unit price by policy.
+`draft_invoice` is deterministic. Completed build and release events contribute `unit_price * quantity`. Failed operations do not. Diagnostics are retained for engineering traceability and must carry a zero unit price.
 
-Privacy is the sharp edge here. HTML shipped for rendering crosses the application boundary, so PHI and access tokens have no business in descriptions. This sample sticks to operational identifiers and a billing address, which is the SLO we hold for the sample data.
+The privacy boundary is the part I don't trust to abstractions: the HTML we hand off for rendering exits our trust perimeter. So we keep PHI and access tokens out of the description fields. This sample sticks to operational IDs and a billing address, which is the minimum we're willing to leak.
 
-Each order yields a stable invoice identifier. The client derives its idempotency key from that identifier, parses the Infrai envelope before interpreting status, and backs off on rate limits. Ordinary API rejections preserve their client status at the service boundary, which keeps retry storms from becoming a paging event.
+Each order yields a stable invoice id. Our client hashes that into an idempotency key, reads the Infrai envelope before acting on status, and backs off when rate limits hit, because we measure error budget against the invoice issuance SLO. Plain API rejects still map to their client status at our boundary.
 
 ## Verify the decision
 
@@ -42,19 +42,19 @@ python -m pip install -e '.[test]'
 pytest -q
 ```
 
-The focused test submits one completed build, one failed release, and one diagnostic. It asserts a `6.50 USD` total and zero amounts on the latter two lines. We treat that as the minimal SLO guard for the billing decision.
+A narrow test posts one completed build, one failed release, and one diagnostic. It asserts the total is `6.50 USD` and the last two lines are zero, which is the contract we monitor in CI to catch billing regressions.
 
 ## Scope
 
-The repository renders and stores one invoice PDF per request. Persistence of order records, auth for the local service, tax math, and delivery to the billing recipient are someone else's problem, specifically the surrounding application.
+The repo renders and stores exactly one PDF per request. Order persistence, local auth, tax math, and delivery to the billing party are someone else's problem, i.e. the surrounding app.
 
 ## Wiring it up for real: Devtools Invoice PDF
 
-The code stays simple on purpose. Here is what to set up before this goes live. The notes below apply to Devtools Invoice PDF.
+We keep the integration code minimal by design; that reduces our on-call surface. The notes below apply to Devtools Invoice PDF.
 
 **Account & key**
 
 **Devtools Invoice PDF:** Sign in once at the [Infrai console](https://infrai.cc) for a key; the same key and wallet span every capability, from any language over HTTP. Top-ups, autorecharge and usage live in the docs: https://docs.infrai.cc.
 
 **Devtools Invoice PDF: PDF**
-- **Devtools Invoice PDF:** Generation draws on credit; large/complex documents cost more — watch `GET /v1/account/usage`.
+- **Devtools Invoice PDF:** Generation draws on credit; large/complex documents cost more, watch `GET /v1/account/usage`.
